@@ -26,6 +26,7 @@ BYTE = 5120
 UNSIGNED_BYTE = 5121
 SHORT = 5122
 UNSIGNED_SHORT = 5123
+UNSIGNED_INT = 5125
 FLOAT = 5126
 
 COMPONENT_DTYPES = {
@@ -33,7 +34,7 @@ COMPONENT_DTYPES = {
     UNSIGNED_BYTE: np.uint8,
     SHORT: np.int16,
     UNSIGNED_SHORT: np.uint16,
-    5125: np.uint32,
+    UNSIGNED_INT: np.uint32,
     FLOAT: np.float32,
 }
 TYPE_SIZES = {"SCALAR": 1, "VEC2": 2, "VEC3": 3, "VEC4": 4, "MAT4": 16}
@@ -248,8 +249,8 @@ class _AccessorDecoder:
             array = np.ascontiguousarray(array).view(dtype)
         return array
 
-    def write(self, array, accessor_type, target=None, bounds=False):
-        array = np.ascontiguousarray(array, dtype=np.float32)
+    def write(self, array, accessor_type, target=None, bounds=False, component_type=FLOAT):
+        array = np.ascontiguousarray(array, dtype=COMPONENT_DTYPES[component_type])
         while len(self.buffer) % 4:
             self.buffer.append(0)
 
@@ -266,7 +267,7 @@ class _AccessorDecoder:
 
         accessor = {
             "bufferView": len(self.data.buffer_views) - 1,
-            "componentType": FLOAT,
+            "componentType": component_type,
             "count": len(array),
             "type": accessor_type,
         }
@@ -340,6 +341,24 @@ class _AccessorDecoder:
                     semantic: self.convert(semantic, accessor_index, transform)
                     for semantic, accessor_index in primitive.attributes.items()
                 }
+                if primitive.indices is not None:
+                    primitive.indices = self.convert_indices(primitive)
+
+    def convert_indices(self, primitive):
+        """
+        Primitives of a mesh share one index accessor: extras.ASOBO_primitive says which
+        slice each one draws (StartIndex, PrimitiveCount triangles), plus a BaseVertexIndex
+        used to address past 65535 with 16 bit indices. Triangles are also wound clockwise,
+        the opposite of glTF.
+        """
+        info = (primitive.extras or {}).get("ASOBO_primitive") or {}
+        indices = self.read(primitive.indices).reshape(-1).astype(np.uint32)
+        if "PrimitiveCount" in info:
+            start = info.get("StartIndex", 0)
+            indices = indices[start:start + 3 * info["PrimitiveCount"]]
+            indices = indices + info.get("BaseVertexIndex", 0)
+        indices = indices.reshape(-1, 3)[:, [0, 2, 1]].reshape(-1)
+        return self.write(indices, "SCALAR", target=34963, component_type=UNSIGNED_INT)
 
     # endregion
 
